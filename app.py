@@ -255,6 +255,26 @@ def process_company(isin, expected_period, actual_period, report_type, broker):
         "Total Beats": total_beats
     }
 
+def get_companies_for_period(expected_period, actual_period):
+    valid = []
+    for isin, a in ALL_ACTUALS.items():
+
+        # check actual availability
+        actual_doc = a["data"]
+        has_actual = (
+            actual_period in actual_doc.get("Standalone", {}).get("actual", {}) or
+            actual_period in actual_doc.get("Consolidated", {}).get("actual", {})
+        )
+
+        # check expected availability
+        has_expected = (isin, expected_period) in ALL_PREVIEWS
+
+        if has_actual and has_expected:
+            valid.append(a["name"])
+
+    return sorted(valid)
+
+
 
 # ============================================================
 #                      SIDEBAR FILTERS
@@ -276,8 +296,19 @@ report_type = st.sidebar.radio("Financial Type", ["Standalone", "Consolidated"])
 show_all = st.sidebar.checkbox("Show ALL companies", value=True)
 
 # Company dropdown (single-company mode)
-company_name_to_isin = {v["name"]: isin for isin, v in ALL_ACTUALS.items()}
-selected_name = st.sidebar.selectbox("Company (optional)", ["-- Show All --"] + list(company_name_to_isin.keys()))
+valid_companies = get_companies_for_period(expected_period, actual_period)
+
+company_name_to_isin = {
+    v["name"]: isin
+    for isin, v in ALL_ACTUALS.items()
+    if v["name"] in valid_companies
+}
+
+selected_name = st.sidebar.selectbox("Company (optional)",
+                                     ["-- Show All --"] + valid_companies)
+
+# company_name_to_isin = {v["name"]: isin for isin, v in ALL_ACTUALS.items()}
+# selected_name = st.sidebar.selectbox("Company (optional)", ["-- Show All --"] + list(company_name_to_isin.keys()))
 
 # If selecting a company → single-company mode
 if selected_name != "-- Show All --":
