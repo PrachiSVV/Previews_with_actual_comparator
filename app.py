@@ -107,10 +107,17 @@ def load_all_previews():
     return preview_map
 
 
+
 @st.cache_data(show_spinner=False)
 def load_company_names():
     docs = COL_ACTUAL.find({}, {"symbolmap.Company_Name": 1})
-    return sorted({d["symbolmap"]["Company_Name"] for d in docs})
+    names = []
+    for d in docs:
+        symbol = d.get("symbolmap", {})
+        name = symbol.get("Company_Name")
+        if name:
+            names.append(name)
+    return sorted(set(names))
 
 
 # Preload datasets
