@@ -101,6 +101,70 @@ def fetch_preview(company, period):
         "report_period": period
     })
 
+def process_company(company_name, expected_period, actual_period, report_type, broker):
+    """Return a dict row for the table for a single company."""
+    preview_doc = fetch_preview(company_name, expected_period)
+    actual_doc = fetch_actual(company_name, actual_period, report_type)
+
+    if not preview_doc or not actual_doc:
+        return None
+
+    # Expected values
+    if broker == "Consensus":
+        cons = preview_doc["consensus"]
+        exp_sales = cons["expected_sales"]["mean"]
+        exp_ebitda = cons["expected_ebitda"]["mean"]
+        exp_pat = cons["expected_pat"]["mean"]
+        exp_margin = cons["ebitda_margin_percent"]["mean"]
+    else:
+        try:
+            b = next(x for x in preview_doc["broker_estimates"] if x["broker_name"] == broker)
+        except StopIteration:
+            return None
+        exp_sales = b.get("expected_sales")
+        exp_ebitda = b.get("expected_ebitda")
+        exp_pat = b.get("expected_pat")
+        exp_margin = b.get("ebitda_margin_percent")
+
+    # Actual
+    act_sales = actual_doc["sales"]
+    act_ebitda = actual_doc["ebitda"]
+    act_pat = actual_doc["pat"]
+    act_margin = actual_doc["ebitda_margin"]
+
+    # Comparisons
+    def pct(a, e):
+        if a is None or e in (None, 0):
+            return None
+        return ((a / e) - 1) * 100
+
+    cs = pct(act_sales, exp_sales)
+    ce = pct(act_ebitda, exp_ebitda)
+    cp = pct(act_pat, exp_pat)
+    cm = (act_margin - exp_margin) * 100
+
+    # Beat flags
+    bs = 1 if cs and cs > 0 else 0
+    be = 1 if ce and ce > 0 else 0
+    bp = 1 if cp and cp > 0 else 0
+    bm = 1 if cm and cm > 0 else 0
+
+    total = bs + be + bp + bm
+
+    return {
+        "Company": company_name,
+        "Sales %": cs,
+        "EBITDA %": ce,
+        "PAT %": cp,
+        "Margin (bps)": cm,
+        "Sales Beat": bs,
+        "EBITDA Beat": be,
+        "PAT Beat": bp,
+        "Margin Beat": bm,
+        "Total Beats": total
+    }
+
+
 # ============================================================
 #                      SIDEBAR FILTERS
 # ============================================================
@@ -112,6 +176,8 @@ company = st.sidebar.selectbox("Company", companies)
 
 expected_periods = get_expected_periods(company)
 actual_periods = get_actual_periods(company)
+show_all = st.sidebar.checkbox("Show all companies for selected period", value=False)
+
 
 expected_period = st.sidebar.selectbox("Expected Period (Estimates)", expected_periods)
 actual_period = st.sidebar.selectbox("Actual Report Period", actual_periods)
@@ -181,6 +247,27 @@ total_beats = beat_sales + beat_ebitda + beat_pat + beat_margin
 # ============================================================
 #                        DISPLAY TABLE
 # ============================================================
+
+# ============================================================
+#       SHOW ALL COMPANIES FOR SELECTED PERIOD (TOGGLE)
+# ============================================================
+
+if show_all:
+    rows = []
+    for comp in companies:
+        row = process_company(comp, expected_period, actual_period, report_type, broker)
+        if row:
+            rows.append(row)
+
+    if rows:
+        df_all = pd.DataFrame(rows)
+
+        st.subheader(f"📊 All Companies — {actual_period} Actual vs {expected_period} Estimates ({broker})")
+        st.dataframe(df_all.sort_values("Total Beats", ascending=False), use_container_width=True)
+    else:
+        st.warning("No companies found with complete data for this period.")
+
+    st.stop()
 
 st.title(f"📈 {company} — {report_type} Results")
 st.caption(f"Comparing **{actual_period} Actuals** vs **{expected_period} Estimates** ({broker})")
