@@ -68,30 +68,42 @@ COL_PREVIEW = DB["company_result_previews"]
 @st.cache_data(show_spinner=False)
 def load_all_actuals():
     docs = list(COL_ACTUAL.find({}, {
-        "symbolmap.Company_Name": 1,
+        "symbolmap": 1,
         "Standalone.actual": 1,
         "Consolidated.actual": 1
     }))
+
     actual_map = {}
     for d in docs:
-        name = d["symbolmap"]["Company_Name"]
+        symbol = d.get("symbolmap", {})
+        name = symbol.get("Company_Name")   # safe access
+        if not name:
+            continue    # skip empty/broken docs
         actual_map[name] = d
+
     return actual_map
 
 
 @st.cache_data(show_spinner=False)
 def load_all_previews():
     docs = list(COL_PREVIEW.find({}, {
-        "symbolmap.Company_Name": 1,
+        "symbolmap": 1,
         "report_period": 1,
         "consensus": 1,
         "broker_estimates": 1
     }))
+
     preview_map = {}
     for d in docs:
-        name = d["symbolmap"]["Company_Name"]
-        period = d["report_period"]
+        symbol = d.get("symbolmap", {})
+        name = symbol.get("Company_Name")
+        period = d.get("report_period")
+
+        if not name or not period:
+            continue    # skip incomplete docs
+
         preview_map[(name, period)] = d
+
     return preview_map
 
 
