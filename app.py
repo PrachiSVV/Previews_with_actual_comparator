@@ -282,7 +282,11 @@ selected_name = st.sidebar.selectbox("Company (optional)", ["-- Show All --"] + 
 # If selecting a company → single-company mode
 if selected_name != "-- Show All --":
     show_all = False
-
+def format_one_decimal(df):
+    for col in df.columns:
+        if pd.api.types.is_numeric_dtype(df[col]):
+            df[col] = df[col].astype(float).round(1)
+    return df
 
 # ============================================================
 #                  ALL COMPANIES TABLE (DEFAULT)
@@ -301,7 +305,11 @@ if show_all:
         st.title("📊 All Companies — Comparison Table")
         st.caption(f"Actual: {actual_period} | Expected: {expected_period} | Broker: {broker}")
 
+        df_all = format_one_decimal(df_all)
         st.dataframe(df_all, use_container_width=True)
+
+
+        # st.dataframe(df_all, use_container_width=True)
     else:
         st.warning("No companies have both actual and expected data.")
 
@@ -344,6 +352,8 @@ single_df = pd.DataFrame({
         row["EBITDA Margin Beat"], row["PAT Margin Beat"]
     ]
 })
+
+single_df = format_one_decimal(single_df)
 
 st.dataframe(single_df, use_container_width=True)
 st.metric("✅ Total Beats", row["Total Beats"])
