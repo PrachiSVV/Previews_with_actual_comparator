@@ -68,18 +68,23 @@ COL_PREVIEW = DB["company_result_previews"]
 @st.cache_data(show_spinner=False)
 def load_all_actuals():
     docs = list(COL_ACTUAL.find({}, {
-        "symbolmap": 1,
+        "company": 1,                           # ← ISIN
+        "symbolmap.Company_Name": 1,
         "Standalone.actual": 1,
         "Consolidated.actual": 1
     }))
 
     actual_map = {}
     for d in docs:
-        symbol = d.get("symbolmap", {})
-        name = symbol.get("Company_Name")   # safe access
-        if not name:
-            continue    # skip empty/broken docs
-        actual_map[name] = d
+        isin = d.get("company")
+        if not isin:
+            continue
+
+        name = d.get("symbolmap", {}).get("Company_Name", isin)
+        actual_map[isin] = {
+            "name": name,
+            "data": d
+        }
 
     return actual_map
 
@@ -87,7 +92,8 @@ def load_all_actuals():
 @st.cache_data(show_spinner=False)
 def load_all_previews():
     docs = list(COL_PREVIEW.find({}, {
-        "symbolmap": 1,
+        "symbolmap.company": 1,                 # ← ISIN
+        "symbolmap.Company_Name": 1,
         "report_period": 1,
         "consensus": 1,
         "broker_estimates": 1
@@ -95,35 +101,31 @@ def load_all_previews():
 
     preview_map = {}
     for d in docs:
-        symbol = d.get("symbolmap", {})
-        name = symbol.get("Company_Name")
+        isin = d.get("symbolmap", {}).get("company")
         period = d.get("report_period")
 
-        if not name or not period:
-            continue    # skip incomplete docs
+        if not isin or not period:
+            continue
 
-        preview_map[(name, period)] = d
+        name = d.get("symbolmap", {}).get("Company_Name", isin)
+        preview_map[(isin, period)] = {
+            "name": name,
+            "data": d
+        }
 
     return preview_map
 
 
-
 @st.cache_data(show_spinner=False)
-def load_company_names():
-    docs = COL_ACTUAL.find({}, {"symbolmap.Company_Name": 1})
-    names = []
-    for d in docs:
-        symbol = d.get("symbolmap", {})
-        name = symbol.get("Company_Name")
-        if name:
-            names.append(name)
-    return sorted(set(names))
+def load_company_list():
+    """Return dropdown list: Show names but internally mapped by ISIN."""
+    actuals = load_all_actuals()
+    return {v["name"]: isin for isin, v in actuals.items()}
 
 
-# Preload datasets
 ALL_ACTUALS = load_all_actuals()
 ALL_PREVIEWS = load_all_previews()
-COMPANIES = load_company_names()
+COMPANY_OPTIONS = load_company_list()   # Name → ISIN mapping
 
 
 # ============================================================
@@ -136,15 +138,18 @@ def pct(a, e):
     return ((a / e) - 1) * 100
 
 
-def process_company(company, expected_period, actual_period, report_type, broker):
-    """Compute comparison row for one company using preloaded data."""
-    preview_doc = ALL_PREVIEWS.get((company, expected_period))
-    actual_doc = ALL_ACTUALS.get(company)
+def process_company(isin, expected_period, actual_period, report_type, broker):
+    preview_entry = ALL_PREVIEWS.get((isin, expected_period))
+    actual_entry = ALL_ACTUALS.get(isin)
 
-    if not preview_doc or not actual_doc:
+    if not preview_entry or not actual_entry:
         return None
 
-    # ---- Actual Data ----
+    company_name = actual_entry["name"]
+    preview_doc = preview_entry["data"]
+    actual_doc = actual_entry["data"]
+
+    # ---- Actual ----
     actual_block = actual_doc.get(report_type, {}).get("actual", {}).get(actual_period)
     if not actual_block:
         return None
@@ -154,7 +159,7 @@ def process_company(company, expected_period, actual_period, report_type, broker
     act_pat = actual_block.get("net_profit")
     act_margin = actual_block.get("ebitda_margin")
 
-    # ---- Expected Data ----
+    # ---- Expected ----
     if broker == "Consensus":
         cons = preview_doc.get("consensus", {})
         exp_sales = cons.get("expected_sales", {}).get("mean")
@@ -162,26 +167,22 @@ def process_company(company, expected_period, actual_period, report_type, broker
         exp_pat = cons.get("expected_pat", {}).get("mean")
         exp_margin = cons.get("ebitda_margin_percent", {}).get("mean")
     else:
-        match = next((b for b in preview_doc.get("broker_estimates", [])
-                      if b["broker_name"] == broker), None)
-        if not match:
+        b = next((x for x in preview_doc.get("broker_estimates", [])
+                  if x["broker_name"] == broker), None)
+        if not b:
             return None
-        exp_sales = match.get("expected_sales")
-        exp_ebitda = match.get("expected_ebitda")
-        exp_pat = match.get("expected_pat")
-        exp_margin = match.get("ebitda_margin_percent")
+        exp_sales = b.get("expected_sales")
+        exp_ebitda = b.get("expected_ebitda")
+        exp_pat = b.get("expected_pat")
+        exp_margin = b.get("ebitda_margin_percent")
 
-    # ---- Comparisons ----
+    # ---- Comparison ----
     cs = pct(act_sales, exp_sales)
     ce = pct(act_ebitda, exp_ebitda)
     cp = pct(act_pat, exp_pat)
+    cm = None if act_margin is None or exp_margin is None else (act_margin - exp_margin) * 100
 
-    if act_margin is None or exp_margin is None:
-        cm = None
-    else:
-        cm = (act_margin - exp_margin) * 100
-
-    # ---- Beat Flags ----
+    # ---- Beats ----
     bs = 1 if cs is not None and cs > 0 else 0
     be = 1 if ce is not None and ce > 0 else 0
     bp = 1 if cp is not None and cp > 0 else 0
@@ -189,7 +190,8 @@ def process_company(company, expected_period, actual_period, report_type, broker
     total = bs + be + bp + bm
 
     return {
-        "Company": company,
+        "Company": company_name,
+        "ISIN": isin,
         "Sales %": cs,
         "EBITDA %": ce,
         "PAT %": cp,
@@ -198,7 +200,7 @@ def process_company(company, expected_period, actual_period, report_type, broker
         "EBITDA Beat": be,
         "PAT Beat": bp,
         "Margin Beat": bm,
-        "Total Beats": total
+        "Total Beats": total,
     }
 
 
@@ -208,13 +210,16 @@ def process_company(company, expected_period, actual_period, report_type, broker
 
 st.sidebar.header("🔎 Filters")
 
-company = st.sidebar.selectbox("Company", COMPANIES)
+selected_name = st.sidebar.selectbox("Company", list(COMPANY_OPTIONS.keys()))
+selected_isin = COMPANY_OPTIONS[selected_name]
 
-# available periods
-exp_periods = sorted({key[1] for key in ALL_PREVIEWS.keys() if key[0] == company})
+# Periods available
+exp_periods = sorted({p for (isin, p) in ALL_PREVIEWS.keys() if isin == selected_isin})
+
+actual_doc = ALL_ACTUALS[selected_isin]["data"]
 act_periods = sorted(
-    list(ALL_ACTUALS.get(company, {}).get("Standalone", {}).get("actual", {}).keys()) +
-    list(ALL_ACTUALS.get(company, {}).get("Consolidated", {}).get("actual", {}).keys())
+    list(actual_doc.get("Standalone", {}).get("actual", {}).keys()) +
+    list(actual_doc.get("Consolidated", {}).get("actual", {}).keys())
 )
 
 show_all = st.sidebar.checkbox("Show ALL companies for this period", value=False)
@@ -223,11 +228,12 @@ expected_period = st.sidebar.selectbox("Expected Period", exp_periods)
 actual_period = st.sidebar.selectbox("Actual Period", act_periods)
 report_type = st.sidebar.radio("Type", ["Standalone", "Consolidated"])
 
-preview_doc = ALL_PREVIEWS.get((company, expected_period))
-if not preview_doc:
+preview_entry = ALL_PREVIEWS.get((selected_isin, expected_period))
+if not preview_entry:
     st.error("No estimate data found for this period.")
     st.stop()
 
+preview_doc = preview_entry["data"]
 broker_list = ["Consensus"] + [b["broker_name"] for b in preview_doc.get("broker_estimates", [])]
 broker = st.sidebar.selectbox("Broker", broker_list)
 
@@ -238,8 +244,8 @@ broker = st.sidebar.selectbox("Broker", broker_list)
 
 if show_all:
     rows = []
-    for comp in COMPANIES:
-        row = process_company(comp, expected_period, actual_period, report_type, broker)
+    for isin in ALL_ACTUALS.keys():
+        row = process_company(isin, expected_period, actual_period, report_type, broker)
         if row:
             rows.append(row)
 
@@ -248,7 +254,7 @@ if show_all:
         st.subheader(f"📊 All Companies — {actual_period} vs {expected_period} ({broker})")
         st.dataframe(df_all, use_container_width=True)
     else:
-        st.warning("No companies have both expected and actual data.")
+        st.warning("No companies have both actual and expected data.")
 
     st.stop()
 
@@ -257,30 +263,20 @@ if show_all:
 #                   SINGLE COMPANY VIEW
 # ============================================================
 
-row = process_company(company, expected_period, actual_period, report_type, broker)
+row = process_company(selected_isin, expected_period, actual_period, report_type, broker)
 if not row:
     st.error("Company missing required data.")
     st.stop()
 
-st.title(f"📈 {company} — {report_type} Results")
+st.title(f"📈 {selected_name} — {report_type} Results")
 st.caption(f"{actual_period} Actuals vs {expected_period} Estimates ({broker})")
-
-df = pd.DataFrame({
-    "Metric": ["Sales", "EBITDA", "PAT", "EBITDA Margin"],
-    "Expected": [
-        row["Sales %"] is not None,
-        row["EBITDA %"] is not None,
-        row["PAT %"] is not None,
-        row["Margin (bps)"] is not None,
-    ],
-})
 
 compare_df = pd.DataFrame({
     "Metric": ["Sales %", "EBITDA %", "PAT %", "Margin (bps)"],
     "Value": [row["Sales %"], row["EBITDA %"], row["PAT %"], row["Margin (bps)"]],
 })
 
-st.subheader("Compare vs Expected (%)")
+st.subheader("Comparison (% difference vs estimates)")
 st.dataframe(compare_df, use_container_width=True)
 
 st.metric("✅ Total Beats", row["Total Beats"])
