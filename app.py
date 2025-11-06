@@ -4,22 +4,20 @@ from pymongo import MongoClient
 import pandas as pd
 from functools import lru_cache
 from typing import Optional
-from dotenv import load_dotenv
 
+# ============================================================
+#              PAGE CONFIG (must be at the top)
+# ============================================================
+st.set_page_config(page_title="Earnings Dashboard", layout="wide")
 
 # ============================================================
 #                     AUTHENTICATION LOGIC
 # ============================================================
 
-def init_env():
-    load_dotenv(override=False)
-
 def get_secret(key: str, default: Optional[str] = None) -> Optional[str]:
-    try:
-        if "secrets" in dir(st) and key in st.secrets:
-            return st.secrets[key]
-    except Exception:
-        pass
+    """Streamlit Cloud reads secrets only from st.secrets"""
+    if key in st.secrets:
+        return st.secrets[key]
     return os.getenv(key, default)
 
 def check_credentials(username: str, password: str) -> bool:
@@ -49,14 +47,9 @@ if "auth_ok" not in st.session_state:
     show_login()
     st.stop()
 
-
 # ============================================================
-#                         MAIN APP STARTS HERE
+#                       MAIN APP STARTS HERE
 # ============================================================
-st.set_page_config(page_title="Earnings Dashboard", layout="wide")
-
-# Load environment variables
-init_env()
 
 # Mongo connection
 MONGO_URI = get_secret("MONGO_URI")
@@ -65,7 +58,6 @@ client = MongoClient(MONGO_URI)
 DB = client["CAG_CHATBOT"]
 COL_ACTUAL = DB["LatestCmotData"]
 COL_PREVIEW = DB["company_result_previews"]
-
 
 # ============================================================
 #                       CACHED QUERIES
@@ -109,7 +101,6 @@ def fetch_preview(company, period):
         "report_period": period
     })
 
-
 # ============================================================
 #                      SIDEBAR FILTERS
 # ============================================================
@@ -135,7 +126,6 @@ if not preview_doc:
 broker_list = ["Consensus"] + [b["broker_name"] for b in preview_doc.get("broker_estimates", [])]
 broker = st.sidebar.selectbox("Broker", broker_list)
 
-
 # ============================================================
 #                EXPECTED VALUES (BROKER / CONSENSUS)
 # ============================================================
@@ -153,7 +143,6 @@ else:
     expected_pat = b.get("expected_pat")
     expected_margin = b.get("ebitda_margin_percent")
 
-
 # ============================================================
 #                       ACTUAL VALUES
 # ============================================================
@@ -168,7 +157,6 @@ actual_ebitda = actual["ebitda"]
 actual_pat = actual["pat"]
 actual_margin = actual["ebitda_margin"]
 
-
 # ============================================================
 #                    COMPUTATION LOGIC
 # ============================================================
@@ -181,7 +169,7 @@ def pct_difference(actual, expected):
 compare_sales = pct_difference(actual_sales, expected_sales)
 compare_ebitda = pct_difference(actual_ebitda, expected_ebitda)
 compare_pat = pct_difference(actual_pat, expected_pat)
-compare_margin = (actual_margin - expected_margin) * 100  # bps
+compare_margin = (actual_margin - expected_margin) * 100
 
 beat_sales = 1 if compare_sales and compare_sales > 0 else 0
 beat_ebitda = 1 if compare_ebitda and compare_ebitda > 0 else 0
@@ -189,7 +177,6 @@ beat_pat = 1 if compare_pat and compare_pat > 0 else 0
 beat_margin = 1 if compare_margin and compare_margin > 0 else 0
 
 total_beats = beat_sales + beat_ebitda + beat_pat + beat_margin
-
 
 # ============================================================
 #                        DISPLAY TABLE
