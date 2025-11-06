@@ -106,33 +106,40 @@ def process_company(company_name, expected_period, actual_period, report_type, b
     preview_doc = fetch_preview(company_name, expected_period)
     actual_doc = fetch_actual(company_name, actual_period, report_type)
 
+    # skip missing data
     if not preview_doc or not actual_doc:
         return None
 
+    # ------------------------------
     # Expected values
+    # ------------------------------
     if broker == "Consensus":
-        cons = preview_doc["consensus"]
-        exp_sales = cons["expected_sales"]["mean"]
-        exp_ebitda = cons["expected_ebitda"]["mean"]
-        exp_pat = cons["expected_pat"]["mean"]
-        exp_margin = cons["ebitda_margin_percent"]["mean"]
+        cons = preview_doc.get("consensus", {})
+        exp_sales = cons.get("expected_sales", {}).get("mean")
+        exp_ebitda = cons.get("expected_ebitda", {}).get("mean")
+        exp_pat = cons.get("expected_pat", {}).get("mean")
+        exp_margin = cons.get("ebitda_margin_percent", {}).get("mean")
     else:
         try:
-            b = next(x for x in preview_doc["broker_estimates"] if x["broker_name"] == broker)
+            b = next(x for x in preview_doc.get("broker_estimates", []) if x["broker_name"] == broker)
+            exp_sales = b.get("expected_sales")
+            exp_ebitda = b.get("expected_ebitda")
+            exp_pat = b.get("expected_pat")
+            exp_margin = b.get("ebitda_margin_percent")
         except StopIteration:
             return None
-        exp_sales = b.get("expected_sales")
-        exp_ebitda = b.get("expected_ebitda")
-        exp_pat = b.get("expected_pat")
-        exp_margin = b.get("ebitda_margin_percent")
 
-    # Actual
-    act_sales = actual_doc["sales"]
-    act_ebitda = actual_doc["ebitda"]
-    act_pat = actual_doc["pat"]
-    act_margin = actual_doc["ebitda_margin"]
+    # ------------------------------
+    # Actual values
+    # ------------------------------
+    act_sales = actual_doc.get("sales")
+    act_ebitda = actual_doc.get("ebitda")
+    act_pat = actual_doc.get("pat")
+    act_margin = actual_doc.get("ebitda_margin")
 
-    # Comparisons
+    # ------------------------------
+    # Comparison helper
+    # ------------------------------
     def pct(a, e):
         if a is None or e in (None, 0):
             return None
@@ -141,13 +148,20 @@ def process_company(company_name, expected_period, actual_period, report_type, b
     cs = pct(act_sales, exp_sales)
     ce = pct(act_ebitda, exp_ebitda)
     cp = pct(act_pat, exp_pat)
-    cm = (act_margin - exp_margin) * 100
 
-    # Beat flags
-    bs = 1 if cs and cs > 0 else 0
-    be = 1 if ce and ce > 0 else 0
-    bp = 1 if cp and cp > 0 else 0
-    bm = 1 if cm and cm > 0 else 0
+    # SAFE margin calculation (fix)
+    if act_margin is None or exp_margin is None:
+        cm = None
+    else:
+        cm = (act_margin - exp_margin) * 100  # bps
+
+    # ------------------------------
+    # Beat flags (safe)
+    # ------------------------------
+    bs = 1 if cs is not None and cs > 0 else 0
+    be = 1 if ce is not None and ce > 0 else 0
+    bp = 1 if cp is not None and cp > 0 else 0
+    bm = 1 if cm is not None and cm > 0 else 0
 
     total = bs + be + bp + bm
 
