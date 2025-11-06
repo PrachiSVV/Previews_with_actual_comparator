@@ -16,7 +16,6 @@ st.set_page_config(page_title="Earnings Dashboard", layout="wide")
 # ============================================================
 
 def get_secret(key: str, default: Optional[str] = None) -> Optional[str]:
-    """Streamlit Cloud reads secrets from st.secrets."""
     if key in st.secrets:
         return st.secrets[key]
     return os.getenv(key, default)
@@ -68,7 +67,7 @@ COL_PREVIEW = DB["company_result_previews"]
 @st.cache_data(show_spinner=False)
 def load_all_actuals():
     docs = list(COL_ACTUAL.find({}, {
-        "company": 1,                           # ← ISIN
+        "company": 1,
         "symbolmap.Company_Name": 1,
         "Standalone.actual": 1,
         "Consolidated.actual": 1
@@ -92,7 +91,7 @@ def load_all_actuals():
 @st.cache_data(show_spinner=False)
 def load_all_previews():
     docs = list(COL_PREVIEW.find({}, {
-        "symbolmap.company": 1,                 # ← ISIN
+        "symbolmap.company": 1,
         "symbolmap.Company_Name": 1,
         "report_period": 1,
         "consensus": 1,
@@ -103,7 +102,6 @@ def load_all_previews():
     for d in docs:
         isin = d.get("symbolmap", {}).get("company")
         period = d.get("report_period")
-
         if not isin or not period:
             continue
 
@@ -112,24 +110,51 @@ def load_all_previews():
             "name": name,
             "data": d
         }
-
     return preview_map
-
-
-@st.cache_data(show_spinner=False)
-def load_company_list():
-    """Return dropdown list: Show names but internally mapped by ISIN."""
-    actuals = load_all_actuals()
-    return {v["name"]: isin for isin, v in actuals.items()}
 
 
 ALL_ACTUALS = load_all_actuals()
 ALL_PREVIEWS = load_all_previews()
-COMPANY_OPTIONS = load_company_list()   # Name → ISIN mapping
 
 
 # ============================================================
-#                       SAFE COMPARISON LOGIC
+#          GLOBAL DISTINCT PERIODS (PERIOD IS FIRST FILTER)
+# ============================================================
+
+@st.cache_data(show_spinner=False)
+def get_global_expected_periods():
+    return sorted({period for (_, period) in ALL_PREVIEWS.keys()})
+
+@st.cache_data(show_spinner=False)
+def get_global_actual_periods():
+    periods = set()
+    for entry in ALL_ACTUALS.values():
+        d = entry["data"]
+        periods.update(list(d.get("Standalone", {}).get("actual", {}).keys()))
+        periods.update(list(d.get("Consolidated", {}).get("actual", {}).keys()))
+    return sorted(periods)
+
+
+EXPECTED_PERIODS = get_global_expected_periods()
+ACTUAL_PERIODS = get_global_actual_periods()
+
+
+# ============================================================
+#     BROKER LIST FOR SELECTED EXPECTED PERIOD (OPTION 2)
+# ============================================================
+
+def get_brokers_for_period(period):
+    brokers = set()
+    for (isin, p), entry in ALL_PREVIEWS.items():
+        if p == period:
+            doc = entry["data"]
+            for b in doc.get("broker_estimates", []):
+                brokers.add(b["broker_name"])
+    return ["Consensus"] + sorted(brokers)
+
+
+# ============================================================
+#                    COMPARISON LOGIC
 # ============================================================
 
 def pct(a, e):
@@ -145,11 +170,11 @@ def process_company(isin, expected_period, actual_period, report_type, broker):
     if not preview_entry or not actual_entry:
         return None
 
-    company_name = actual_entry["name"]
     preview_doc = preview_entry["data"]
     actual_doc = actual_entry["data"]
+    company_name = actual_entry["name"]
 
-    # ---- Actual ----
+    # Actual values
     actual_block = actual_doc.get(report_type, {}).get("actual", {}).get(actual_period)
     if not actual_block:
         return None
@@ -159,7 +184,7 @@ def process_company(isin, expected_period, actual_period, report_type, broker):
     act_pat = actual_block.get("net_profit")
     act_margin = actual_block.get("ebitda_margin")
 
-    # ---- Expected ----
+    # Expected values
     if broker == "Consensus":
         cons = preview_doc.get("consensus", {})
         exp_sales = cons.get("expected_sales", {}).get("mean")
@@ -176,17 +201,18 @@ def process_company(isin, expected_period, actual_period, report_type, broker):
         exp_pat = b.get("expected_pat")
         exp_margin = b.get("ebitda_margin_percent")
 
-    # ---- Comparison ----
+    # Differences
     cs = pct(act_sales, exp_sales)
     ce = pct(act_ebitda, exp_ebitda)
     cp = pct(act_pat, exp_pat)
     cm = None if act_margin is None or exp_margin is None else (act_margin - exp_margin) * 100
 
-    # ---- Beats ----
+    # Beats
     bs = 1 if cs is not None and cs > 0 else 0
     be = 1 if ce is not None and ce > 0 else 0
     bp = 1 if cp is not None and cp > 0 else 0
     bm = 1 if cm is not None and cm > 0 else 0
+
     total = bs + be + bp + bm
 
     return {
@@ -210,36 +236,30 @@ def process_company(isin, expected_period, actual_period, report_type, broker):
 
 st.sidebar.header("🔎 Filters")
 
-selected_name = st.sidebar.selectbox("Company", list(COMPANY_OPTIONS.keys()))
-selected_isin = COMPANY_OPTIONS[selected_name]
+# Period FIRST (GLOBAL)
+expected_period = st.sidebar.selectbox("Expected Period", EXPECTED_PERIODS)
+actual_period = st.sidebar.selectbox("Actual Period", ACTUAL_PERIODS)
 
-# Periods available
-exp_periods = sorted({p for (isin, p) in ALL_PREVIEWS.keys() if isin == selected_isin})
-
-actual_doc = ALL_ACTUALS[selected_isin]["data"]
-act_periods = sorted(
-    list(actual_doc.get("Standalone", {}).get("actual", {}).keys()) +
-    list(actual_doc.get("Consolidated", {}).get("actual", {}).keys())
-)
-
-show_all = st.sidebar.checkbox("Show ALL companies for this period", value=False)
-
-expected_period = st.sidebar.selectbox("Expected Period", exp_periods)
-actual_period = st.sidebar.selectbox("Actual Period", act_periods)
-report_type = st.sidebar.radio("Type", ["Standalone", "Consolidated"])
-
-preview_entry = ALL_PREVIEWS.get((selected_isin, expected_period))
-if not preview_entry:
-    st.error("No estimate data found for this period.")
-    st.stop()
-
-preview_doc = preview_entry["data"]
-broker_list = ["Consensus"] + [b["broker_name"] for b in preview_doc.get("broker_estimates", [])]
+# Global broker list for the selected expected_period
+broker_list = get_brokers_for_period(expected_period)
 broker = st.sidebar.selectbox("Broker", broker_list)
+
+report_type = st.sidebar.radio("Financial Type", ["Standalone", "Consolidated"])
+
+# Default: ALL companies table is ON
+show_all = st.sidebar.checkbox("Show ALL companies", value=True)
+
+# Company dropdown (single-company mode)
+company_name_to_isin = {v["name"]: isin for isin, v in ALL_ACTUALS.items()}
+selected_name = st.sidebar.selectbox("Company (optional)", ["-- Show All --"] + list(company_name_to_isin.keys()))
+
+# If selecting a company → single-company mode
+if selected_name != "-- Show All --":
+    show_all = False
 
 
 # ============================================================
-#               ALL COMPANIES TABLE (FAST MODE)
+#                  ALL COMPANIES TABLE (DEFAULT)
 # ============================================================
 
 if show_all:
@@ -251,7 +271,8 @@ if show_all:
 
     if rows:
         df_all = pd.DataFrame(rows).sort_values("Total Beats", ascending=False)
-        st.subheader(f"📊 All Companies — {actual_period} vs {expected_period} ({broker})")
+        st.title("📊 All Companies — Comparison Table")
+        st.caption(f"Actual: {actual_period} | Expected: {expected_period} | Broker: {broker}")
         st.dataframe(df_all, use_container_width=True)
     else:
         st.warning("No companies have both actual and expected data.")
@@ -260,23 +281,23 @@ if show_all:
 
 
 # ============================================================
-#                   SINGLE COMPANY VIEW
+#                 SINGLE-COMPANY MODE
 # ============================================================
 
+selected_isin = company_name_to_isin.get(selected_name)
 row = process_company(selected_isin, expected_period, actual_period, report_type, broker)
+
 if not row:
-    st.error("Company missing required data.")
+    st.error("Company does not have matching data for this period.")
     st.stop()
 
 st.title(f"📈 {selected_name} — {report_type} Results")
-st.caption(f"{actual_period} Actuals vs {expected_period} Estimates ({broker})")
+st.caption(f"Actual: {actual_period} | Expected: {expected_period} | Broker: {broker}")
 
 compare_df = pd.DataFrame({
     "Metric": ["Sales %", "EBITDA %", "PAT %", "Margin (bps)"],
     "Value": [row["Sales %"], row["EBITDA %"], row["PAT %"], row["Margin (bps)"]],
 })
 
-st.subheader("Comparison (% difference vs estimates)")
 st.dataframe(compare_df, use_container_width=True)
-
 st.metric("✅ Total Beats", row["Total Beats"])
