@@ -2,7 +2,6 @@ import os
 import streamlit as st
 from pymongo import MongoClient
 import pandas as pd
-from functools import lru_cache
 from typing import Optional
 
 # ============================================================
@@ -15,7 +14,7 @@ st.set_page_config(page_title="Earnings Dashboard", layout="wide")
 # ============================================================
 
 def get_secret(key: str, default: Optional[str] = None) -> Optional[str]:
-    """Streamlit Cloud reads secrets only from st.secrets"""
+    """Streamlit Cloud reads secrets only from st.secrets."""
     if key in st.secrets:
         return st.secrets[key]
     return os.getenv(key, default)
@@ -39,13 +38,13 @@ def show_login():
         else:
             st.error("Invalid credentials.")
 
-
 # ============================================================
 #                  SHOW LOGIN FIRST
 # ============================================================
 if "auth_ok" not in st.session_state:
     show_login()
     st.stop()
+
 
 # ============================================================
 #                       MAIN APP STARTS HERE
@@ -59,6 +58,7 @@ DB = client["CAG_CHATBOT"]
 COL_ACTUAL = DB["LatestCmotData"]
 COL_PREVIEW = DB["company_result_previews"]
 
+
 # ============================================================
 #                       CACHED QUERIES
 # ============================================================
@@ -66,7 +66,10 @@ COL_PREVIEW = DB["company_result_previews"]
 @st.cache_data(show_spinner=False)
 def get_companies():
     docs = COL_ACTUAL.find({}, {"symbolmap.Company_Name": 1})
-    return sorted({doc.get("symbolmap", {}).get("Company_Name") for doc in docs if doc.get("symbolmap")})
+    return sorted({
+        doc.get("symbolmap", {}).get("Company_Name")
+        for doc in docs if doc.get("symbolmap")
+    })
 
 @st.cache_data(show_spinner=False)
 def get_expected_periods(company):
@@ -87,12 +90,14 @@ def fetch_actual(company, period, report_type):
     if not doc:
         return None
     data = doc.get(report_type, {}).get("actual", {}).get(period, {})
+    if not data:
+        return None
     return {
         "sales": data.get("net_sales"),
         "ebitda": data.get("ebitda"),
         "pat": data.get("net_profit"),
         "ebitda_margin": data.get("ebitda_margin")
-    } if data else None
+    }
 
 @st.cache_data(show_spinner=False)
 def fetch_preview(company, period):
@@ -101,18 +106,19 @@ def fetch_preview(company, period):
         "report_period": period
     })
 
+
+# ============================================================
+#          Helper: Process One Company (Safe for all)
+# ============================================================
+
 def process_company(company_name, expected_period, actual_period, report_type, broker):
-    """Return a dict row for the table for a single company."""
     preview_doc = fetch_preview(company_name, expected_period)
     actual_doc = fetch_actual(company_name, actual_period, report_type)
 
-    # skip missing data
     if not preview_doc or not actual_doc:
         return None
 
-    # ------------------------------
-    # Expected values
-    # ------------------------------
+    # ------- Expected Values -------
     if broker == "Consensus":
         cons = preview_doc.get("consensus", {})
         exp_sales = cons.get("expected_sales", {}).get("mean")
@@ -122,24 +128,20 @@ def process_company(company_name, expected_period, actual_period, report_type, b
     else:
         try:
             b = next(x for x in preview_doc.get("broker_estimates", []) if x["broker_name"] == broker)
-            exp_sales = b.get("expected_sales")
-            exp_ebitda = b.get("expected_ebitda")
-            exp_pat = b.get("expected_pat")
-            exp_margin = b.get("ebitda_margin_percent")
         except StopIteration:
             return None
+        exp_sales = b.get("expected_sales")
+        exp_ebitda = b.get("expected_ebitda")
+        exp_pat = b.get("expected_pat")
+        exp_margin = b.get("ebitda_margin_percent")
 
-    # ------------------------------
-    # Actual values
-    # ------------------------------
+    # ------- Actual -------
     act_sales = actual_doc.get("sales")
     act_ebitda = actual_doc.get("ebitda")
     act_pat = actual_doc.get("pat")
     act_margin = actual_doc.get("ebitda_margin")
 
-    # ------------------------------
-    # Comparison helper
-    # ------------------------------
+    # ------- Comparison -------
     def pct(a, e):
         if a is None or e in (None, 0):
             return None
@@ -149,15 +151,13 @@ def process_company(company_name, expected_period, actual_period, report_type, b
     ce = pct(act_ebitda, exp_ebitda)
     cp = pct(act_pat, exp_pat)
 
-    # SAFE margin calculation (fix)
+    # margin is in bps
     if act_margin is None or exp_margin is None:
         cm = None
     else:
-        cm = (act_margin - exp_margin) * 100  # bps
+        cm = (act_margin - exp_margin) * 100
 
-    # ------------------------------
-    # Beat flags (safe)
-    # ------------------------------
+    # ------- Beat Flags -------
     bs = 1 if cs is not None and cs > 0 else 0
     be = 1 if ce is not None and ce > 0 else 0
     bp = 1 if cp is not None and cp > 0 else 0
@@ -190,8 +190,8 @@ company = st.sidebar.selectbox("Company", companies)
 
 expected_periods = get_expected_periods(company)
 actual_periods = get_actual_periods(company)
-show_all = st.sidebar.checkbox("Show all companies for selected period", value=False)
 
+show_all = st.sidebar.checkbox("Show all companies for selected period", value=False)
 
 expected_period = st.sidebar.selectbox("Expected Period (Estimates)", expected_periods)
 actual_period = st.sidebar.selectbox("Actual Report Period", actual_periods)
@@ -206,64 +206,9 @@ if not preview_doc:
 broker_list = ["Consensus"] + [b["broker_name"] for b in preview_doc.get("broker_estimates", [])]
 broker = st.sidebar.selectbox("Broker", broker_list)
 
-# ============================================================
-#                EXPECTED VALUES (BROKER / CONSENSUS)
-# ============================================================
-
-if broker == "Consensus":
-    cons = preview_doc["consensus"]
-    expected_sales = cons["expected_sales"]["mean"]
-    expected_ebitda = cons["expected_ebitda"]["mean"]
-    expected_pat = cons["expected_pat"]["mean"]
-    expected_margin = cons["ebitda_margin_percent"]["mean"]
-else:
-    b = next(x for x in preview_doc["broker_estimates"] if x["broker_name"] == broker)
-    expected_sales = b.get("expected_sales")
-    expected_ebitda = b.get("expected_ebitda")
-    expected_pat = b.get("expected_pat")
-    expected_margin = b.get("ebitda_margin_percent")
 
 # ============================================================
-#                       ACTUAL VALUES
-# ============================================================
-
-actual = fetch_actual(company, actual_period, report_type)
-if not actual:
-    st.error("Actual data missing for selected period.")
-    st.stop()
-
-actual_sales = actual["sales"]
-actual_ebitda = actual["ebitda"]
-actual_pat = actual["pat"]
-actual_margin = actual["ebitda_margin"]
-
-# ============================================================
-#                    COMPUTATION LOGIC
-# ============================================================
-
-def pct_difference(actual, expected):
-    if actual is None or expected in (None, 0):
-        return None
-    return ((actual / expected) - 1) * 100
-
-compare_sales = pct_difference(actual_sales, expected_sales)
-compare_ebitda = pct_difference(actual_ebitda, expected_ebitda)
-compare_pat = pct_difference(actual_pat, expected_pat)
-compare_margin = (actual_margin - expected_margin) * 100
-
-beat_sales = 1 if compare_sales and compare_sales > 0 else 0
-beat_ebitda = 1 if compare_ebitda and compare_ebitda > 0 else 0
-beat_pat = 1 if compare_pat and compare_pat > 0 else 0
-beat_margin = 1 if compare_margin and compare_margin > 0 else 0
-
-total_beats = beat_sales + beat_ebitda + beat_pat + beat_margin
-
-# ============================================================
-#                        DISPLAY TABLE
-# ============================================================
-
-# ============================================================
-#       SHOW ALL COMPANIES FOR SELECTED PERIOD (TOGGLE)
+#     SHOW ALL-COMPANY TABLE (BEFORE single-company view)
 # ============================================================
 
 if show_all:
@@ -275,16 +220,68 @@ if show_all:
 
     if rows:
         df_all = pd.DataFrame(rows)
-
-        st.subheader(f"📊 All Companies — {actual_period} Actual vs {expected_period} Estimates ({broker})")
+        st.subheader(f"📊 All Companies — {actual_period} Actual vs {expected_period} ({broker})")
         st.dataframe(df_all.sort_values("Total Beats", ascending=False), use_container_width=True)
     else:
-        st.warning("No companies found with complete data for this period.")
+        st.warning("No companies found with complete data.")
 
     st.stop()
 
+
+# ============================================================
+#             SINGLE COMPANY VIEW (Original)
+# ============================================================
+
+# expected values
+if broker == "Consensus":
+    cons = preview_doc.get("consensus", {})
+    expected_sales = cons.get("expected_sales", {}).get("mean")
+    expected_ebitda = cons.get("expected_ebitda", {}).get("mean")
+    expected_pat = cons.get("expected_pat", {}).get("mean")
+    expected_margin = cons.get("ebitda_margin_percent", {}).get("mean")
+else:
+    b = next(x for x in preview_doc.get("broker_estimates") if x["broker_name"] == broker)
+    expected_sales = b.get("expected_sales")
+    expected_ebitda = b.get("expected_ebitda")
+    expected_pat = b.get("expected_pat")
+    expected_margin = b.get("ebitda_margin_percent")
+
+# actual
+actual = fetch_actual(company, actual_period, report_type)
+if not actual:
+    st.error("Actual data missing.")
+    st.stop()
+
+actual_sales = actual["sales"]
+actual_ebitda = actual["ebitda"]
+actual_pat = actual["pat"]
+actual_margin = actual["ebitda_margin"]
+
+# safe margin diff
+if actual_margin is None or expected_margin is None:
+    compare_margin = None
+else:
+    compare_margin = (actual_margin - expected_margin) * 100
+
+def pct_difference(a, e):
+    if a is None or e in (None, 0):
+        return None
+    return ((a / e) - 1) * 100
+
+compare_sales = pct_difference(actual_sales, expected_sales)
+compare_ebitda = pct_difference(actual_ebitda, expected_ebitda)
+compare_pat = pct_difference(actual_pat, expected_pat)
+
+beat_sales = 1 if compare_sales is not None and compare_sales > 0 else 0
+beat_ebitda = 1 if compare_ebitda is not None and compare_ebitda > 0 else 0
+beat_pat = 1 if compare_pat is not None and compare_pat > 0 else 0
+beat_margin = 1 if compare_margin is not None and compare_margin > 0 else 0
+
+total_beats = beat_sales + beat_ebitda + beat_pat + beat_margin
+
+# output
 st.title(f"📈 {company} — {report_type} Results")
-st.caption(f"Comparing **{actual_period} Actuals** vs **{expected_period} Estimates** ({broker})")
+st.caption(f"{actual_period} Actuals vs {expected_period} Estimates ({broker})")
 
 df = pd.DataFrame({
     "Metric": ["Sales", "EBITDA", "PAT", "EBITDA Margin"],
@@ -299,10 +296,10 @@ styled = df.style.format({
     "Actual": "{:,.2f}",
     "Difference (%)": "{:+.2f}"
 }).apply(
-    lambda row: ["background-color:#d4edda" if row["Beat"] == 1 else "background-color:#f8d7da"] * len(row),
+    lambda row: ["background-color:#d4edda" if row["Beat"] == 1 
+                 else "background-color:#f8d7da"] * len(row),
     axis=1
 )
 
 st.dataframe(styled, use_container_width=True)
-
 st.metric("✅ Total Beats", total_beats)
