@@ -64,7 +64,7 @@ COL_PREVIEW = DB["company_result_previews"]
 #           PRELOAD EVERYTHING (FASTEST PERFORMANCE)
 # ============================================================
 
-@st.cache_data(show_spinner=False)
+
 def load_all_actuals():
     docs = list(COL_ACTUAL.find({}, {
         "company": 1,
@@ -88,7 +88,7 @@ def load_all_actuals():
     return actual_map
 
 
-@st.cache_data(show_spinner=False)
+
 def load_all_previews():
     docs = list(COL_PREVIEW.find({}, {
         "symbolmap.company": 1,
@@ -121,11 +121,11 @@ ALL_PREVIEWS = load_all_previews()
 #          GLOBAL DISTINCT PERIODS (PERIOD IS FIRST FILTER)
 # ============================================================
 
-@st.cache_data(show_spinner=False)
+
 def get_global_expected_periods():
     return sorted({period for (_, period) in ALL_PREVIEWS.keys()})
 
-@st.cache_data(show_spinner=False)
+
 def get_global_actual_periods():
     periods = set()
     for entry in ALL_ACTUALS.values():
@@ -160,7 +160,7 @@ def get_brokers_for_period(period):
 def pct(a, e):
     if a is None or e in (None, 0):
         return None
-    return ((a / e) - 1) * 100
+    return (a-e / abs(e)) * 100
 
 
 def process_company(isin, expected_period, actual_period, report_type, broker):
